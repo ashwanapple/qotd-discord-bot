@@ -17,7 +17,7 @@ intents.members = True
 
 # time
 utc = datetime.timezone.utc
-settings = {"hour": 0, "min": 0}
+settings = {"hour": 0, "min": 0, "target_channel": None}
 
 def make_time():
     return datetime.time(hour = settings["hour"], minute = settings["min"], tzinfo=utc)
@@ -29,8 +29,14 @@ def update_time():
 # trigger daily
 @tasks.loop(time=make_time())
 async def called_once_a_day():
-    message_channel = bot.get_channel(target_channel_id)
-    print(f"Channel to send questions: {message_channel}")
+    if target_channel_id is None:
+        print(f"No QOTD channel set yet! Use !set_channel in your desired channel")
+        return
+    message_channel = bot.get_channel(settings["target_channel"])
+    # print(f"Channel to send questions: {message_channel}")
+    if message_channel is None:
+        print(f"Erm something went wrong... maybe your permissions are sus")
+        return
     await message_channel.send(question)
 
 
@@ -88,6 +94,17 @@ async def set_min_error(ctx, error):
 @bot.command()
 async def get_time(ctx):
     await ctx.send(f"Your daily send time is set to: {make_time()}")
+
+# set channel
+@bot.command()
+async def set_channel(ctx):
+    settings["target_channel"] = ctx.channel.id
+    await ctx.channel.send("QOTD's will be sent here")
+
+@bot.command()
+async def get_channel(ctx):
+    await ctx.send(f"Your QOTD channel is: {bot.get_channel(settings["target_channel"])}")
+
 
 
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)
