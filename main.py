@@ -1,4 +1,5 @@
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 import datetime
 from zoneinfo import ZoneInfo
@@ -59,8 +60,6 @@ async def get_new_question():
 handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
 intents = discord.Intents.default()
 
-intents.message_content = True
-intents.members = True
 
 # time
 tz = ZoneInfo("America/Vancouver")
@@ -74,22 +73,28 @@ def update_time():
     called_once_a_day.change_interval(time=make_time())
     called_once_a_day.restart()
 
-# trigger daily
-@tasks.loop(time=make_time())
-async def called_once_a_day():
+class QOTDBot(commands.Bot):
+    async def setup_hook(self):
+        await self.tree.sync()
+        called_once_a_day.start()
+
+    async def on_ready(self):
+        print(f"Ready, {self.user.name}")
+
+bot = QOTDBot(command_prefix=commands.when_mentioned, intents=intents)
+
+async def send_qotd():
     if settings["target_channel"] is None:
-        print(f"No QOTD channel set yet! Use !set_channel in your desired channel")
-        return
+        return "No QOTD channel set yet! Use !set_channel in your desired channel"
+    
     message_channel = bot.get_channel(settings["target_channel"])
-    # print(f"Channel to send questions: {message_channel}")
+
     if message_channel is None:
-        print(f"Erm something went wrong... maybe your permissions are sus")
-        return
+        return "Erm something went wrong... maybe your permissions are sus"
     
     question = await get_new_question()
     if question is None:
-        print(f"No more questions?!")
-        return
+        return "No more questions?!"
 
     await message_channel.send(question)
 
@@ -97,81 +102,80 @@ async def called_once_a_day():
     used.add(question)
     save_json(QUESTION_LOG, sorted(used))
 
+    return None
 
+# trigger daily
+@tasks.loop(time=make_time())
+async def called_once_a_day():
+    error = await send_qotd()
+    if error:
+        print(error)
 
-bot = commands.Bot(command_prefix='!', intents=intents)
-
-@bot.event
-async def on_ready():
-    print(f"Ready, {bot.user.name}")
-    if not called_once_a_day.is_running():
-        called_once_a_day.start()
+@called_once_a_day.before_loop
+async def before_called_once_a_day():
+    await bot.wait_until_ready()
 
 # COMMANDS
 # test command
-@bot.command()
-async def hello(ctx):
-    await ctx.send(f"Hello {ctx.author.mention}!")
+@bot.tree.command(name="test", description="Test command")
+async def hello(interaction: discord.Interaction):
+    await interaction.response.send_message(f"Hello {interaction.user.mention}!")
 
 # set hour from user
-@bot.command()
-async def set_hour(ctx, hour: int):
-    if not 0 <= hour <= 23:
-        await ctx.send("Please set a valid hour")
-        return
+@bot.tree.command(name="set_hour", description="Set the hour (0-23) the QOTD is sent")
+async def set_hour(interaction: discord.Interaction, hour: app_commands.Range[int, 0, 23]):
     settings["hour"] = hour
     save_json(SETTINGS, settings)
     update_time()
-    await ctx.send(f"Hour set to: {hour}")
+    await interaction.response.send_message(f"Hour set to: {hour}")
 
-@set_hour.error
-async def set_hour_error(ctx, error):
-    if isinstance(error, commands.BadArgument):
-        await ctx.send("Not a valid hour dummy")
-    elif isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send("Enter something... It doesn't magically appear! e.g. !set_hour 5")
-    else:
-        raise error
 
 # set min from user
-@bot.command()
-async def set_min(ctx, minute: int):
-    if not 0 <= minute <= 59:
-        await ctx.send("Please set a valid minute")
-        return
+@bot.tree.command(name="set_min", description="Set the min (0-59) the QOTD is sent")
+async def set_min(interaction: discord.Interaction, minute: app_commands.Range[int, 0, 59]):
     settings["min"] = minute
     save_json(SETTINGS, settings)
     update_time()
-    await ctx.send(f"Minutes set to: {minute}")
-
-@set_min.error
-async def set_min_error(ctx, error):
-    if isinstance(error, commands.BadArgument):
-        await ctx.send("Not a valid minute dummy")
-    elif isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send("Enter something... It doesn't magically appear! e.g. !set_min 30")
-    else:
-        raise error
+    await interaction.response.send_message(f"Minutes set to: {minute}")
 
 # print current set time
-@bot.command()
-async def get_time(ctx):
-    await ctx.send(f"Your daily send time is set to: {make_time()}")
+@bot.tree.command(name="get_time", description="Show what time the daily QOTD is sent")
+async def get_time(interaction: discord.Interaction):
+    await interaction.response.send_message(f"Your daily send time is set to: {settings['hour']}:{settings['min']}")
 
 # set channel
-@bot.command()
-async def set_channel(ctx):
-    settings["target_channel"] = ctx.channel.id
+@bot.tree.command(name="set_channel", description="Set channel for questions to be current channel")
+async def set_channel(interaction: discord.Interaction):
+    settings["target_channel"] = interaction.channel.id
     save_json(SETTINGS, settings)
-    await ctx.channel.send("QOTD's will be sent here")
+    await interaction.response.send_message("QOTD's will be sent here")
 
-@bot.command()
-async def get_channel(ctx):
-    await ctx.send(f"Your QOTD channel is: {bot.get_channel(settings['target_channel'])}")
+@bot.tree.command(name="get_channel", description="Get channel where questions are sent")
+async def get_channel(interaction: discord.Interaction):
+    channel_id = settings["target_channel"]
+    channel = bot.get_channel(channel_id) if channel_id else None
+    if channel is None:
+        await interaction.response.send_message("No QOTD channel set yet! Use /set_channel")
+        return
+    await interaction.response.send_message(f"QOTD channel: {channel.mention}")
 
 # trigger question
-@bot.command()
-async def trigger(ctx):
-    await called_once_a_day()
+@bot.tree.command(name="trigger", description="Trigger a question right now")
+async def trigger(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    error = await send_qotd()
+    await interaction.followup.send(error or "Question sent!", ephemeral=True)
+
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.MissingPermissions):
+        msg = "missing permissions"
+    else:
+        msg = "Something went wrong..."
+        print(f"Slash command error: {error!r}")
+    if interaction.response.is_done():
+        await interaction.followup.send(msg, ephemeral=True)
+    else:
+        await interaction.response.send_message(msg, ephemeral=True)
 
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)
