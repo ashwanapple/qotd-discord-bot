@@ -96,7 +96,7 @@ async def send_qotd():
     if question is None:
         return "No more questions?!"
 
-    await message_channel.send(question)
+    await message_channel.send("# QOTD \n\n" + question + "\n\n @everyone")
 
     used = set(load_json(QUESTION_LOG, []))
     used.add(question)
